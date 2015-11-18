@@ -3,8 +3,8 @@ package main
 import (
 	"fmt"
 	"os"
-	"log"
 	"github.com/phaxio/filterpcap/Godeps/_workspace/src/github.com/codegangsta/cli"
+	"regexp"
 )
 
 func main() {
@@ -34,11 +34,14 @@ func main() {
 			return
 		}
 
-		err := createFilteredPcaps(c.Args()[0], loadFilters(c))
+		str := "s=asdf\r\nm=hello"
+		r, _ := regexp.Compile("m=(.*)")
+		fmt.Println(r.FindAllStringSubmatchIndex(str, 0))
+		//err := createFilteredPcaps(c.Args()[0], loadFilters(c))
 		
-		if err != nil {
-			log.Fatal(err)
-		}
+		//if err != nil {
+		//	log.Fatal(err)
+		//}
 	}
 
 	app.Run(os.Args)
