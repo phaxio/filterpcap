@@ -2,9 +2,10 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"os"
+
 	"github.com/phaxio/filterpcap/Godeps/_workspace/src/github.com/codegangsta/cli"
-	"regexp"
 )
 
 func main() {
@@ -12,7 +13,7 @@ func main() {
 	app.Name = "filterpcap"
 	app.Version = "0.1"
 	app.Usage = "filterpcap someFile.pcap [options]"
-	
+
 	app.Flags = []cli.Flag{
 		cli.StringFlag{
 			Name:  "to",
@@ -34,14 +35,11 @@ func main() {
 			return
 		}
 
-		str := "s=asdf\r\nm=hello"
-		r, _ := regexp.Compile("m=(.*)")
-		fmt.Println(r.FindAllStringSubmatchIndex(str, 0))
-		//err := createFilteredPcaps(c.Args()[0], loadFilters(c))
-		
-		//if err != nil {
-		//	log.Fatal(err)
-		//}
+		err := createFilteredPcaps(c.Args()[0], loadFilters(c))
+
+		if err != nil {
+			log.Fatal(err)
+		}
 	}
 
 	app.Run(os.Args)
@@ -49,18 +47,18 @@ func main() {
 
 func loadFilters(c *cli.Context) *map[string]string {
 	filters := make(map[string]string)
-	
+
 	if c.String("to") != "" {
 		filters["to"] = c.String("to")
 	}
-	
+
 	if c.String("callId") != "" {
 		filters["callId"] = c.String("callId")
 	}
-	
+
 	if c.String("sipCode") != "" {
 		filters["sipCode"] = c.String("sipCode")
 	}
-	
+
 	return &filters
 }

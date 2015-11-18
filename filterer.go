@@ -13,6 +13,13 @@ import (
 	"github.com/phaxio/sip_parser"
 )
 
+const (
+	CONTENT_TYPE_SDP string = "application/sdp"
+)
+
+var matchedCalls map[string]PhoneCall
+var mediaRegex = regexp.MustCompile("(?m)^m=(.*)$")
+
 type PhoneCall struct {
 	to string
 	from string
@@ -29,9 +36,6 @@ type SIPPacket struct {
 	dstPort 	string
 	packet		*gopacket.Packet
 }
-
-var matchedCalls map[string]PhoneCall
-var mediaLineRegex = regexp.MustCompile("^m=(.*)$")
 
 func createFilteredPcaps(inputFilename string, filters *map[string]string) (error){
 	if err := validateInput(inputFilename, filters); err != nil{
@@ -103,7 +107,6 @@ func parseForSip(packet gopacket.Packet) *SIPPacket {
 				fmt.Println("body: " + string(appLayer.Payload()))
 			}
 			
-			fmt.Println(mediaLineRegex.FindAllString(sipMessage.Body, 0))
 			
 			
 			
@@ -126,4 +129,18 @@ func validateInput(inputFilename string , filters *map[string]string) (error){
 	}
 	
 	return nil
+}
+
+func extractMediaPortFromSDP(sipMsg *sipparser.SipMsg) (int, error) {
+	
+	matches := mediaRegex.FindAllStringSubmatchIndex(sipMsg.Body, -1)
+	if len(matches) > 1 {
+		return 0, errors.New("Attempted to parse media line from SDP, but found " + string(len(matches)) + " lines!")  
+	} else if len(matches) == 0 {
+		return 0, errors.New("Attempted to parse media line from SDP, but could not find a media line!")
+	}
+	
+	//parse port out of media line
+
+	return 0, nil
 }
