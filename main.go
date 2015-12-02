@@ -23,10 +23,6 @@ func main() {
 			Name:  "callId",
 			Usage: "Extract call with a specific SIP call ID",
 		},
-		cli.StringFlag{
-			Name:  "sipCode",
-			Usage: "Extract calls containing SIP packets with a certain status code",
-		},
 	}
 
 	app.Action = func(c *cli.Context) {
@@ -35,7 +31,15 @@ func main() {
 			return
 		}
 
-		err := createFilteredPcaps(c.Args()[0], loadFilters(c))
+		if c.String("to") != "" {
+			Filters = append(Filters, PcapFilter{filterType: "to", value: c.String("to")}) 
+		}
+		
+		if c.String("callId") != "" {
+			Filters = append(Filters, PcapFilter{filterType: "callId", value: c.String("callId")})
+		}
+		
+		err := createFilteredPcaps(c.Args()[0])
 
 		if err != nil {
 			log.Fatal(err)
@@ -45,20 +49,3 @@ func main() {
 	app.Run(os.Args)
 }
 
-func loadFilters(c *cli.Context) *map[string]string {
-	filters := make(map[string]string)
-
-	if c.String("to") != "" {
-		filters["to"] = c.String("to")
-	}
-
-	if c.String("callId") != "" {
-		filters["callId"] = c.String("callId")
-	}
-
-	if c.String("sipCode") != "" {
-		filters["sipCode"] = c.String("sipCode")
-	}
-
-	return &filters
-}

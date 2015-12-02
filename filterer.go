@@ -1,146 +1,251 @@
 package main
 
 import (
-	"os"
-	"fmt"
 	"errors"
-	"strings"
-	"strconv"
+	"fmt"
+	"log"
+	"os"
 	"regexp"
+	"strconv"
+	"strings"
+	"unicode/utf8"
+
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
 	"github.com/phaxio/sip_parser"
+	"github.com/ttacon/libphonenumber"
 )
 
-const (
-	CONTENT_TYPE_SDP string = "application/sdp"
-)
+const CONTENT_TYPE_SDP string = "application/sdp"
 
-var matchedCalls map[string]PhoneCall
+var matchedCalls = make(map[string]*PhoneCall)
+var monitoredMediaPorts = make(map[string]*PhoneCall)
+
 var mediaRegex = regexp.MustCompile("(?m)^m=(.*)$")
+var sip = regexp.MustCompile("")
+var Filters []PcapFilter
 
 type PhoneCall struct {
-	to string
-	from string
-	sipId string
+	to    		*sipparser.From
+	from  		*sipparser.From
+	callId 		string
+	mediaPorts  map[string]bool
 }
 
-type SIPPacket struct {
-	messageType	string
-	callId		string
-	mediaPort	string		
-	srcIP 		string
-	dstIP 		string
-	srcPort 	string
-	dstPort 	string
-	packet		*gopacket.Packet
+type PacketInfo struct {
+	srcIP   string
+	dstIP   string
+	srcPort string
+	dstPort string
 }
 
-func createFilteredPcaps(inputFilename string, filters *map[string]string) (error){
-	if err := validateInput(inputFilename, filters); err != nil{
+func (pi *PacketInfo) SrcIpAndPort() (string) {
+	return pi.srcIP + ":" + pi.srcPort 
+}
+
+func (pi *PacketInfo) DstIpAndPort() (string) {
+	return pi.dstIP + ":" + pi.dstPort 
+}
+
+
+type PcapFilter struct {
+	filterType string
+	value      string
+}
+
+func sipMessageNumberToString(number *sipparser.From) (string){
+	return number.URI.User
+}
+
+func matchesFilters(sipMessage *sipparser.SipMsg) bool {
+	for _, filter := range Filters {
+		if filter.filterType == "to" && phoneNumbersMatch(sipMessageNumberToString(sipMessage.To), filter.value){
+			return true
+		} else if filter.filterType == "callId" && sipMessage.CallId == filter.value {
+			return true
+		}
+	}
+
+	return false
+}
+
+
+func createFilteredPcaps(inputFilename string) error {
+	if err := validateInput(inputFilename); err != nil {
 		return err
 	}
-	
+
 	if handle, err := pcap.OpenOffline(inputFilename); err != nil {
 		panic(err)
 	} else {
 		packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
 		for packet := range packetSource.Packets() {
+			packetInfo := getPacketInfo(packet)
 			
-			if parsedSipPacket := parseForSip(packet); parsedSipPacket != nil {
-				//if it's a matched INVITE, open a new call file and tag the handle as sipId:SIP_ID
-				
-				//if it's part of an existing matched call
-					//write the packet to a file
-					//if it declares a port to listen to, open a new tag in memory called "port:PORT" and point the tag to the existing file
-				//if the current packet is a BYEs, remove any port tags for this call
+			if packetInfo == nil {
+				continue;
+			}
+
+			if sipPacket := parseForSip(packet); sipPacket != nil {
+				if matchesFilters(sipPacket) {
+					//add the packet to the list
+					//0c0422ad-fd0a-1233-108e-02dbda1bcd05
+					
+					if _, found := matchedCalls[sipPacket.CallId]; !found {
+						phoneCall := PhoneCall{from: sipPacket.From, to: sipPacket.To, callId: sipPacket.CallId}
+						matchedCalls[sipPacket.CallId] = &phoneCall
+					}
+					
+					if sipPacket.ContentType == CONTENT_TYPE_SDP {
+						mediaPort, err := extractMediaPortFromSDP(sipPacket)
+						if err != nil {
+							log.Panicln(err)
+						}
+						
+						//put that tag in
+						monitoredMediaPorts[packetInfo.srcIP + ":" + mediaPort] = matchedCalls[sipPacket.CallId]
+						phoneCall := *matchedCalls[sipPacket.CallId]
+						phoneCall.mediaPorts[packetInfo.srcIP + ":" + mediaPort] = true
+					}
+					
+					//if it's a BYE, clean up any port related tags
+					if (sipPacket.StartLine.Method == "BYE"){
+						for mediaIpAndPort, _ := range matchedCalls[sipPacket.CallId].mediaPorts {
+							delete(monitoredMediaPorts, mediaIpAndPort)
+						}
+						
+						//clear the ports list
+						for k := range matchedCalls[sipPacket.CallId].mediaPorts{
+						    delete(matchedCalls[sipPacket.CallId].mediaPorts, k)
+						}
+					}
+					
+					writePacket(packet, matchedCalls[sipPacket.CallId])
+					
+				} else {
+					continue
+				}
+			} else if _, ok := monitoredMediaPorts[packetInfo.SrcIpAndPort()]; ok {
+				writePacket(packet, monitoredMediaPorts[packetInfo.SrcIpAndPort()])
 			}
 		}
 		
-		//Declare which calls we found and where they're saved
+		if len(matchedCalls) > 0 {
+			lineFormat := "%s\t%s\t%t%s"
+		
+			fmt.Sprintf(lineFormat, "Call ID", "To", "From", "Output Filename")
+			
+			//Declare which calls we found and where they're saved
+			for _, call := range matchedCalls {
+				fmt.Sprintf(lineFormat, sipMessageNumberToString(call.to), sipMessageNumberToString(call.from), "") 
+			}	
+		} else {
+			return errors.New("No calls found in the provided capture.")
+		}
 	}
-	
+
 	return nil
 }
 
-func parseForSip(packet gopacket.Packet) *SIPPacket {
+func writePacket(packet gopacket.Packet, phoneCall *PhoneCall) {
+	
+}
+
+func phoneNumbersMatch(num1, num2 string) (bool){
+	normalized1, err := normalizeNumber(num1)
+	
+	if err != nil {
+		panic(err)
+	}
+	
+	normalized2, err := normalizeNumber(num1)
+	
+	if err != nil {
+		panic(err)
+	}
+	
+	return normalized1 == normalized2
+}
+
+func parseForSip(packet gopacket.Packet) *sipparser.SipMsg {
 	ipLayer := packet.Layer(layers.LayerTypeIPv4)
 	appLayer := packet.ApplicationLayer()
-	
+
 	if ipLayer != nil && appLayer != nil && strings.Contains(string(appLayer.Payload()), "SIP") {
-		sipMessage := sipparser.ParseMsg(string(appLayer.Payload()))
-		
-		if sipMessage != nil {
-			sipPacket := new(SIPPacket)
- 			ip, _ := ipLayer.(*layers.IPv4)
- 			
- 			//Set the ports 
- 			if ip.Protocol == layers.IPProtocolTCP {
-			 	protocol, _ := packet.Layer(layers.LayerTypeTCP).(*layers.TCP)
-		 		sipPacket.srcIP = ip.SrcIP.String()
-		 		sipPacket.dstIP = ip.DstIP.String()
-		 		sipPacket.srcPort = strconv.Itoa(int(protocol.SrcPort))
-		 		sipPacket.dstPort = strconv.Itoa(int(protocol.DstPort))
-			} else if ip.Protocol == layers.IPProtocolUDP {
- 				protocol, _ := packet.Layer(layers.LayerTypeUDP).(*layers.UDP)
-		 		sipPacket.srcIP = ip.SrcIP.String()
-		 		sipPacket.dstIP = ip.DstIP.String()
-		 		sipPacket.srcPort = strconv.Itoa(int(protocol.SrcPort))
-		 		sipPacket.dstPort = strconv.Itoa(int(protocol.DstPort))
- 			}
-			
-			fmt.Println("\n\n New sip packet")
-			fmt.Println("===================")
-			fmt.Println(sipPacket.srcIP, sipPacket.srcPort)
-			fmt.Println(sipPacket.dstIP, sipPacket.dstPort)
-			fmt.Println("Content-Type: " + sipMessage.ContentType)
-			if sipMessage.StartLine.Type == sipparser.SIP_REQUEST {
-				fmt.Println("Received SIP request ")
-				fmt.Println("method: " + sipMessage.StartLine.Method)
-				fmt.Println("callId: " + sipMessage.CallId)
-				fmt.Println("body: " + string(appLayer.Payload()))
-			} else if sipMessage.StartLine.Type == sipparser.SIP_RESPONSE {
-				fmt.Println("Received SIP response")
-				fmt.Println("Status: " + sipMessage.StartLine.RespText)
-				fmt.Println("callId: " + sipMessage.CallId)
-				fmt.Println("body: " + string(appLayer.Payload()))
-			}
-			
-			
-			
-			
-			return sipPacket
-		}			
-		
+		return sipparser.ParseMsg(string(appLayer.Payload()))
 	}
-	
+
 	return nil
 }
 
+func getPacketInfo(packet gopacket.Packet) *PacketInfo {
+	ipLayer := packet.Layer(layers.LayerTypeIPv4)
+	var packetInfo PacketInfo
 
-func validateInput(inputFilename string , filters *map[string]string) (error){
-	if _, err := os.Stat(inputFilename); os.IsNotExist(err) {
-		return fmt.Errorf("no such file or directory: %s\n", inputFilename)
+	if ipLayer != nil {
+		ip, _ := ipLayer.(*layers.IPv4)
+
+		//Set the ports
+		if ip.Protocol == layers.IPProtocolTCP {
+			protocol, _ := packet.Layer(layers.LayerTypeTCP).(*layers.TCP)
+			packetInfo.srcIP = ip.SrcIP.String()
+			packetInfo.dstIP = ip.DstIP.String()
+			packetInfo.srcPort = strconv.Itoa(int(protocol.SrcPort))
+			packetInfo.dstPort = strconv.Itoa(int(protocol.DstPort))
+		} else if ip.Protocol == layers.IPProtocolUDP {
+			protocol, _ := packet.Layer(layers.LayerTypeUDP).(*layers.UDP)
+			packetInfo.srcIP = ip.SrcIP.String()
+			packetInfo.dstIP = ip.DstIP.String()
+			packetInfo.srcPort = strconv.Itoa(int(protocol.SrcPort))
+			packetInfo.dstPort = strconv.Itoa(int(protocol.DstPort))
+		}
 	}
-	
-	if len(*filters) == 0{
+
+	return &packetInfo
+}
+
+func validateInput(inputFilename string) error {
+	if _, err := os.Stat(inputFilename); os.IsNotExist(err) {
+		return errors.New(fmt.Sprintf("no such file or directory: %s\n", inputFilename))
+	}
+
+	if len(Filters) == 0 {
 		return errors.New("You must specify at least one filter for the pcap.")
 	}
-	
+
 	return nil
 }
 
-func extractMediaPortFromSDP(sipMsg *sipparser.SipMsg) (int, error) {
-	
-	matches := mediaRegex.FindAllStringSubmatchIndex(sipMsg.Body, -1)
+func extractMediaPortFromSDP(sipMsg *sipparser.SipMsg) (string, error) {
+
+	matches := mediaRegex.FindAllStringSubmatch(sipMsg.Body, -1)
 	if len(matches) > 1 {
-		return 0, errors.New("Attempted to parse media line from SDP, but found " + string(len(matches)) + " lines!")  
+		return "", errors.New("Attempted to parse media line from SDP, but found " + string(len(matches)) + " lines!")
 	} else if len(matches) == 0 {
-		return 0, errors.New("Attempted to parse media line from SDP, but could not find a media line!")
+		return "", errors.New("Attempted to parse media line from SDP, but could not find a media line!")
+	}
+
+	//parse port out of media line
+	return strings.Fields(matches[0][1])[1], nil
+}
+
+func normalizeNumber(number string) (string, error) {
+	if utf8.RuneCountInString(number) == 10 && !strings.HasPrefix(number, "+") {
+		number = "1" + number
 	}
 	
-	//parse port out of media line
-
-	return 0, nil
+	if !strings.HasPrefix(number, "+"){
+		number = "+" + number
+	}
+	
+	phoneNum, err := libphonenumber.Parse(number, "US")
+	
+	if err != nil {
+		return "", err
+	}
+	
+	return libphonenumber.Format(phoneNum,libphonenumber.E164), nil
+	
+	
 }
