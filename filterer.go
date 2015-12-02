@@ -27,8 +27,8 @@ var sip = regexp.MustCompile("")
 var Filters []PcapFilter
 
 type PhoneCall struct {
-	to    		*sipparser.From
-	from  		*sipparser.From
+	to    		string
+	from  		string
 	callId 		string
 	mediaPorts  map[string]bool
 }
@@ -93,7 +93,9 @@ func createFilteredPcaps(inputFilename string) error {
 					//0c0422ad-fd0a-1233-108e-02dbda1bcd05
 					
 					if _, found := matchedCalls[sipPacket.CallId]; !found {
-						phoneCall := PhoneCall{from: sipPacket.From, to: sipPacket.To, callId: sipPacket.CallId}
+						toNumber, _ := normalizeNumber(sipMessageNumberToString(sipPacket.To))
+						fromNumber, _ := normalizeNumber(sipMessageNumberToString(sipPacket.From))
+						phoneCall := PhoneCall{from: fromNumber, to: toNumber, callId: sipPacket.CallId, mediaPorts: map[string]bool{}}
 						matchedCalls[sipPacket.CallId] = &phoneCall
 					}
 					
@@ -132,13 +134,16 @@ func createFilteredPcaps(inputFilename string) error {
 		}
 		
 		if len(matchedCalls) > 0 {
-			lineFormat := "%s\t%s\t%t%s"
+			lineFormat := "%-40s | %-15s | %-15s | %-30s"
+			
 		
-			fmt.Sprintf(lineFormat, "Call ID", "To", "From", "Output Filename")
+			log.Println(fmt.Sprintf(lineFormat, "Call ID", "To", "From", "Output Filename"))
+			log.Println(fmt.Sprintf(lineFormat, "========================================", "===============", "===============", "=============================="))
+			
 			
 			//Declare which calls we found and where they're saved
 			for _, call := range matchedCalls {
-				fmt.Sprintf(lineFormat, sipMessageNumberToString(call.to), sipMessageNumberToString(call.from), "") 
+				log.Println(fmt.Sprintf(lineFormat, call.callId, call.to, call.from, "")) 
 			}	
 		} else {
 			return errors.New("No calls found in the provided capture.")
@@ -221,6 +226,8 @@ func extractMediaPortFromSDP(sipMsg *sipparser.SipMsg) (string, error) {
 
 	matches := mediaRegex.FindAllStringSubmatch(sipMsg.Body, -1)
 	if len(matches) > 1 {
+		fmt.Println(matches)
+		fmt.Println(sipMsg.Body)
 		return "", errors.New("Attempted to parse media line from SDP, but found " + string(len(matches)) + " lines!")
 	} else if len(matches) == 0 {
 		return "", errors.New("Attempted to parse media line from SDP, but could not find a media line!")
