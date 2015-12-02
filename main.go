@@ -23,6 +23,15 @@ func main() {
 			Name:  "callId",
 			Usage: "Extract call with a specific SIP call ID",
 		},
+		cli.StringFlag{
+			Name:  "outputDirectory, d",
+			Usage: "Directory used to output filtered files",
+			Value: "./",
+		},
+		cli.BoolFlag {
+			Name: "debug",
+			Usage: "Output debugging information",
+		},
 	}
 
 	app.Action = func(c *cli.Context) {
@@ -39,7 +48,7 @@ func main() {
 			Filters = append(Filters, PcapFilter{filterType: "callId", value: c.String("callId")})
 		}
 		
-		err := createFilteredPcaps(c.Args()[0])
+		err := createFilteredPcaps(c.Args()[0], c.String("outputDirectory"), c.Bool("debug"))
 
 		if err != nil {
 			log.Fatal(err)

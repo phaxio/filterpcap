@@ -31,6 +31,7 @@ type PhoneCall struct {
 	from  		string
 	callId 		string
 	mediaPorts  map[string]bool
+	numPackets	int
 }
 
 type PacketInfo struct {
@@ -71,7 +72,9 @@ func matchesFilters(sipMessage *sipparser.SipMsg) bool {
 }
 
 
-func createFilteredPcaps(inputFilename string) error {
+func createFilteredPcaps(inputFilename string, directoryPrefix string, debug bool) error {
+	packetCounter := 1
+	
 	if err := validateInput(inputFilename); err != nil {
 		return err
 	}
@@ -81,6 +84,12 @@ func createFilteredPcaps(inputFilename string) error {
 	} else {
 		packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
 		for packet := range packetSource.Packets() {
+			if debug {
+				log.Println(fmt.Sprintf("Processing packet #%d",packetCounter))
+			}
+			packetCounter++
+
+			
 			packetInfo := getPacketInfo(packet)
 			
 			if packetInfo == nil {
@@ -176,7 +185,7 @@ func phoneNumbersMatch(num1, num2 string) (bool){
 func parseForSip(packet gopacket.Packet) *sipparser.SipMsg {
 	ipLayer := packet.Layer(layers.LayerTypeIPv4)
 	appLayer := packet.ApplicationLayer()
-
+	fmt.Println("PAYLOAD: " + string(appLayer.Payload()) + " - END.")
 	if ipLayer != nil && appLayer != nil && strings.Contains(string(appLayer.Payload()), "SIP") {
 		return sipparser.ParseMsg(string(appLayer.Payload()))
 	}
@@ -223,12 +232,11 @@ func validateInput(inputFilename string) error {
 }
 
 func extractMediaPortFromSDP(sipMsg *sipparser.SipMsg) (string, error) {
-
 	matches := mediaRegex.FindAllStringSubmatch(sipMsg.Body, -1)
 	if len(matches) > 1 {
 		fmt.Println(matches)
 		fmt.Println(sipMsg.Body)
-		return "", errors.New("Attempted to parse media line from SDP, but found " + string(len(matches)) + " lines!")
+		return "", errors.New(fmt.Sprintf("Attempted to parse media line from SDP, but found %d lines!", len(matches)))
 	} else if len(matches) == 0 {
 		return "", errors.New("Attempted to parse media line from SDP, but could not find a media line!")
 	}
@@ -253,6 +261,4 @@ func normalizeNumber(number string) (string, error) {
 	}
 	
 	return libphonenumber.Format(phoneNum,libphonenumber.E164), nil
-	
-	
 }
