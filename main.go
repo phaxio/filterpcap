@@ -35,6 +35,13 @@ func main() {
 	}
 
 	app.Action = func(c *cli.Context) {
+		runTestZone()
+	}
+
+	app.Run(os.Args)
+}
+
+func mainAction(c *cli.Context){
 		if len(c.Args()) == 0 {
 			fmt.Println("You must specify a pcap filename")
 			return
@@ -53,8 +60,4 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-	}
-
-	app.Run(os.Args)
 }
-

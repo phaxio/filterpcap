@@ -26,6 +26,10 @@ var mediaRegex = regexp.MustCompile("(?m)^m=(.*)$")
 var sip = regexp.MustCompile("")
 var Filters []PcapFilter
 
+
+//Map from port:seqNumber to previous packet
+var expectedTCPPackets = make(map[string]*gopacket.Packet)
+
 type PhoneCall struct {
 	to    		string
 	from  		string
@@ -59,7 +63,7 @@ func sipMessageNumberToString(number *sipparser.From) (string){
 	return number.URI.User
 }
 
-func matchesFilters(sipMessage *sipparser.SipMsg) bool {
+func matchesFilters(sipMessage sipparser.SipMsg) bool {
 	for _, filter := range Filters {
 		if filter.filterType == "to" && phoneNumbersMatch(sipMessageNumberToString(sipMessage.To), filter.value){
 			return true
@@ -88,57 +92,36 @@ func createFilteredPcaps(inputFilename string, directoryPrefix string, debug boo
 				log.Println(fmt.Sprintf("Processing packet #%d",packetCounter))
 			}
 			packetCounter++
-
-			
 			packetInfo := getPacketInfo(packet)
+			isSipPacket := false
 			
+			//if this is not a UDP or TCP packet, just move along
 			if packetInfo == nil {
 				continue;
 			}
 
-			if sipPacket := parseForSip(packet); sipPacket != nil {
-				if matchesFilters(sipPacket) {
-					//add the packet to the list
-					//0c0422ad-fd0a-1233-108e-02dbda1bcd05
-					
-					if _, found := matchedCalls[sipPacket.CallId]; !found {
-						toNumber, _ := normalizeNumber(sipMessageNumberToString(sipPacket.To))
-						fromNumber, _ := normalizeNumber(sipMessageNumberToString(sipPacket.From))
-						phoneCall := PhoneCall{from: fromNumber, to: toNumber, callId: sipPacket.CallId, mediaPorts: map[string]bool{}}
-						matchedCalls[sipPacket.CallId] = &phoneCall
-					}
-					
-					if sipPacket.ContentType == CONTENT_TYPE_SDP {
-						mediaPort, err := extractMediaPortFromSDP(sipPacket)
-						if err != nil {
-							log.Panicln(err)
-						}
-						
-						//put that tag in
-						monitoredMediaPorts[packetInfo.srcIP + ":" + mediaPort] = matchedCalls[sipPacket.CallId]
-						phoneCall := *matchedCalls[sipPacket.CallId]
-						phoneCall.mediaPorts[packetInfo.srcIP + ":" + mediaPort] = true
-					}
-					
-					//if it's a BYE, clean up any port related tags
-					if (sipPacket.StartLine.Method == "BYE"){
-						for mediaIpAndPort, _ := range matchedCalls[sipPacket.CallId].mediaPorts {
-							delete(monitoredMediaPorts, mediaIpAndPort)
-						}
-						
-						//clear the ports list
-						for k := range matchedCalls[sipPacket.CallId].mediaPorts{
-						    delete(matchedCalls[sipPacket.CallId].mediaPorts, k)
-						}
-					}
-					
-					writePacket(packet, matchedCalls[sipPacket.CallId])
-					
-				} else {
-					continue
+			if packetIsContinuation(packet){
+				//construct the fragmented sip message
+				//test it and write it out if necessary
+				//remove the packet from expectedTCPPackets
+				isSipPacket = true
+			}
+			
+			completeSipMessages, isFragmented := parseForSipMessages(packet)
+			if isFragmented {
+				//add this packet to expectedTCPPackets keyed by port and expected seq number
+			}
+			
+			if len(completeSipMessages) > 0 {
+				isSipPacket = true
+				for _, sipMessage := range completeSipMessages {
+					writeIfMatchedSipMessage(sipMessage, []gopacket.Packet{packet}, *packetInfo)
 				}
-			} else if _, ok := monitoredMediaPorts[packetInfo.SrcIpAndPort()]; ok {
-				writePacket(packet, monitoredMediaPorts[packetInfo.SrcIpAndPort()])
+			}
+			
+			_, packetDirectedToMonitoredMediaPort := monitoredMediaPorts[packetInfo.SrcIpAndPort()];
+			if !isSipPacket && packetDirectedToMonitoredMediaPort {
+				writePackets([]gopacket.Packet{packet}, monitoredMediaPorts[packetInfo.SrcIpAndPort()])
 			}
 		}
 		
@@ -162,7 +145,66 @@ func createFilteredPcaps(inputFilename string, directoryPrefix string, debug boo
 	return nil
 }
 
-func writePacket(packet gopacket.Packet, phoneCall *PhoneCall) {
+//Take the body, look for SIP messages.  If they exist, split them up and return them.
+//If we find that the last message is fragmented, do not return it in the list and return false 
+func parseForSipMessages(packet gopacket.Packet) ([]sipparser.SipMsg, bool){
+	/*ipLayer := packet.Layer(layers.LayerTypeIPv4)
+	appLayer := packet.ApplicationLayer()
+	
+	fmt.Println("PAYLOAD: " + string(appLayer.Payload()) + " - END.")
+	if ipLayer != nil && appLayer != nil && strings.Contains(string(appLayer.Payload()), "SIP") {
+		return sipparser.ParseMsg(string(appLayer.Payload()))
+	}
+
+	return nil*/
+	
+	return nil, false
+}
+
+func packetIsContinuation(packet gopacket.Packet) (bool){
+	return false
+}
+
+func writeIfMatchedSipMessage(sipMessage sipparser.SipMsg, packetsInvolved []gopacket.Packet, packetInfo PacketInfo) (bool){
+	if matchesFilters(sipMessage) {
+		if _, found := matchedCalls[sipMessage.CallId]; !found {
+			toNumber, _ := normalizeNumber(sipMessageNumberToString(sipMessage.To))
+			fromNumber, _ := normalizeNumber(sipMessageNumberToString(sipMessage.From))
+			phoneCall := PhoneCall{from: fromNumber, to: toNumber, callId: sipMessage.CallId, mediaPorts: map[string]bool{}}
+			matchedCalls[sipMessage.CallId] = &phoneCall
+		}
+		
+		if sipMessage.ContentType == CONTENT_TYPE_SDP {
+			mediaPort, err := extractMediaPortFromSDP(sipMessage)
+			if err != nil {
+				log.Panicln(err)
+			}
+			
+			//put that tag in
+			monitoredMediaPorts[packetInfo.srcIP + ":" + mediaPort] = matchedCalls[sipMessage.CallId]
+			phoneCall := *matchedCalls[sipMessage.CallId]
+			phoneCall.mediaPorts[packetInfo.srcIP + ":" + mediaPort] = true
+		}
+		
+		//if it's a BYE, clean up any port related tags
+		if (sipMessage.StartLine.Method == "BYE"){
+			for mediaIpAndPort, _ := range matchedCalls[sipMessage.CallId].mediaPorts {
+				delete(monitoredMediaPorts, mediaIpAndPort)
+			}
+			
+			//clear the ports list
+			for k := range matchedCalls[sipMessage.CallId].mediaPorts{
+			    delete(matchedCalls[sipMessage.CallId].mediaPorts, k)
+			}
+		}
+		
+		writePackets(packetsInvolved, matchedCalls[sipMessage.CallId])
+		return true
+	}
+	return false
+}
+
+func writePackets(packets []gopacket.Packet, phoneCall *PhoneCall) {
 	
 }
 
@@ -231,7 +273,7 @@ func validateInput(inputFilename string) error {
 	return nil
 }
 
-func extractMediaPortFromSDP(sipMsg *sipparser.SipMsg) (string, error) {
+func extractMediaPortFromSDP(sipMsg sipparser.SipMsg) (string, error) {
 	matches := mediaRegex.FindAllStringSubmatch(sipMsg.Body, -1)
 	if len(matches) > 1 {
 		fmt.Println(matches)
